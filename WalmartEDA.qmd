@@ -1,0 +1,129 @@
+---
+title: "Walmart_EDA"
+author: Jenna Worthen
+format: pdf
+editor: visual
+---
+
+## Walmart Forecasting Kaggle Competition
+
+My EDA and data wrangling for the 2014 Walmart Forecasting Kaggle Competition. There are some issues with the raw data so this document helps me unstand how to feature engineer and data wrangle the best.
+
+```{r, include = FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gridExtra)
+library(lubridate)
+library(tidyverse)
+# library(imputeTS)
+# library(tictoc)
+# library(forecast)
+
+train_df <- read_csv("C:/Users/Jenna/OneDrive/Desktop/Statistics/Stat 348/WalmartForecasting/data/train.csv")
+test_df <- read_csv("C:/Users/Jenna/OneDrive/Desktop/Statistics/Stat 348/WalmartForecasting/data/test.csv")
+stores <- read_csv("C:/Users/Jenna/OneDrive/Desktop/Statistics/Stat 348/WalmartForecasting/data/stores.csv")
+features <- read_csv("C:/Users/Jenna/OneDrive/Desktop/Statistics/Stat 348/WalmartForecasting/data/features.csv")
+```
+
+Combine Store and Department in new column for easy identifier.
+
+```{r}
+addUniqueStoreDept <- function(data){
+  mutate(data, storeDept = paste0(Store, "_", Dept),
+         .before = 1)
+}
+
+train_df <- addUniqueStoreDept((train_df))
+test_df <- addUniqueStoreDept((test_df))
+
+train_df <- filter(train_df, storeDept %in% unique(test_df$storeDept))
+```
+
+Checking if there is inconsistent storeDept in test vs train
+
+```{r}
+n_distinct(train_df$storeDept)
+## [1] 3331
+n_distinct(test_df$storeDept)
+## [1] 3169
+```
+
+Filter storeDept to only keep the ones we are predicting in test
+
+```{r}
+train_df <- filter(train_df, storeDept %in% unique(test_df$storeDept))
+
+n_distinct(test_df$storeDept) - n_distinct(train_df$storeDept)
+```
+
+FInd the id's of the stores we don't have any data for. We'll need to use "nearest neighbors" or some technique like it to find similar stores that have data to predict stores we don't.
+
+```{r}
+(storeDeptNoData <- 
+  test_df %>%
+  filter(!storeDept %in% unique(train_df$storeDept)) %>%
+  .$storeDept %>%
+  unique())
+```
+
+Check if data has irregular time series (missing gaps between observations of weeks)
+
+```{r}
+# Add 1 because the first week is not accounted for in the difference
+
+startTrain <- min(train_df$Date)
+endTrain <- max(train_df$Date)
+
+startTest <- min(test_df$Date)
+endTest <- max(test_df$Date)
+
+lengthTrain <- difftime(endTrain, startTrain, units = "weeks") + 1
+print(lengthTrain)
+## Time difference of 143 weeks
+lengthTest <- difftime(endTest, startTest, units = "weeks") + 1
+print(lengthTest)
+# ## Time difference of 39 weeks
+obsPerStoreDept <-
+  train_df %>%
+  count(storeDept) %>%
+  arrange(n) %>%
+  rename(numObs = n)
+# 
+# unique(obsPerStoreDept$numObs)
+```
+
+We have time series of various intervals. The maximum length is 143 weeks, which corresponds to what we computed above. Surprisingly, there are `storeDept` with less than 10 observations over the 143 weeks.
+
+##### **Check if there are differences for `storeDept` with irregular time series**
+
+Since our objective is to minimize the `WMAE` of forecast `Weekly_Sales`, we find out if `storeDept` with irregular time series have different behavior.
+
+We first check the distribution of `Weekly_Sales`.
+
+```{r}
+numObs_vs_weeklySales <- train_df %>%
+  merge(obsPerStoreDept, by = "storeDept") %>%
+  select(Date, storeDept, Weekly_Sales, numObs)
+```
+
+```{r}
+numObsLabels <- c("FALSE" = "numObs == 143", "TRUE" = "numObs < 143")
+
+numObs_vs_weeklySales.aes <- function(data, scales = "free_y"){
+  data %>%
+  ggplot(aes(fill = as.factor(numObs == 143) ,
+             color = as.factor(numObs == 143))) +
+  theme(legend.position = "none") +
+  facet_grid(rows = vars(numObs < 143),
+             labeller = as_labeller(numObsLabels),
+             scales = scales)
+}
+```
+
+```{r}
+numObs_vs_weeklySales.aes(numObs_vs_weeklySales) +
+  geom_density(aes(Weekly_Sales), alpha = 0.5) +
+  coord_cartesian(xlim = c(-5000,100000))
+```
